@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<index version="1" name="Comparator">
+  <category name="Comparator">
+    <reapack name="Comparator.lua" type="script" desc="Comparator: masking/interference meter (work in progress)">
+      <metadata>
+        <description><![CDATA[Live interference metering for REAPER. Star a Reference track and every other tapped track shows where the Reference competes with it or out-levels it in its own territory, per frequency band. Pan-aware, time-aware (steady/intermittent/takes turns), with stereo-width/mono-compatibility and contribution views. Requires ReaImGui and the "Comparator spectrum tap" JSFX package from this repository. v0.x: experimental, expect breaking changes.]]></description>
+        <link rel="website">https://github.com/dtrebjesanin/reaper-comparator</link>
+      </metadata>
+      <version name="0.1.0" author="Danilo Trebjesanin" time="2026-07-10T22:00:00Z">
+        <changelog><![CDATA[Initial experimental release. Work in progress: tested in one studio, Windows only so far; tap protocol changes between updates require Remove all + Tap all.]]></changelog>
+        <source main="main" file="Comparator.lua">https://github.com/dtrebjesanin/reaper-comparator/raw/v0.1.0/Comparator.lua</source>
+        <source main="main" file="Comparator_SelfTest.lua">https://github.com/dtrebjesanin/reaper-comparator/raw/v0.1.0/Comparator_SelfTest.lua</source>
+        <source file="comparator_core.lua">https://github.com/dtrebjesanin/reaper-comparator/raw/v0.1.0/comparator_core.lua</source>
+        <source file="comparator_bridge.lua">https://github.com/dtrebjesanin/reaper-comparator/raw/v0.1.0/comparator_bridge.lua</source>
+      </version>
+    </reapack>
+    <reapack name="Comparator_Tap.jsfx" type="effect" desc="Comparator spectrum tap (JSFX analyzer, required by Comparator)">
+      <metadata>
+        <description><![CDATA[The per-track analyzer for Comparator. Inserted and managed automatically by the Comparator script (Tap all / Tap selected); you normally never touch it directly, except the "Analyze channel pair" slider for multi-out instruments.]]></description>
+        <link rel="website">https://github.com/dtrebjesanin/reaper-comparator</link>
+      </metadata>
+      <version name="0.1.0" author="Danilo Trebjesanin" time="2026-07-10T22:00:00Z">
+        <changelog><![CDATA[Initial experimental release (tap protocol v2).]]></changelog>
+        <source file="Comparator_Tap.jsfx">https://github.com/dtrebjesanin/reaper-comparator/raw/v0.1.0/Comparator_Tap.jsfx</source>
+      </version>
+    </reapack>
+  </category>
+  <metadata>
+    <description><![CDATA[Comparator: a free, open-source masking/interference meter for REAPER, built entirely on native technology (JSFX taps, gmem, ReaImGui). Work in progress; feedback welcome at the GitHub repository.]]></description>
+    <link rel="website">https://github.com/dtrebjesanin/reaper-comparator</link>
+  </metadata>
+</index>

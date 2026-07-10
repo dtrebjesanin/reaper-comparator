@@ -1,0 +1,174 @@
+desc:Comparator Tap
+options:gmem=Comparator
+
+slider1:tap_id=-1<-1,511,1>-Tap ID (managed by Comparator.lua)
+slider2:chpair=0<0,31,1>Analyze channel pair (0=1/2, 1=3/4, ...)
+
+@init
+FFT_SIZE = 4096;
+HOP = 2048;            // 50% overlap
+NBANDS = 32;
+BASE = 256;            // gmem write base (protocol v2, was 64 in v1)
+STRIDE = 256;          // gmem per-tap stride (protocol v2, was 64 in v1)
+// --- local memory map (protocol v2) ---
+// The real-FFT call requires each FFT buffer to not straddle a 65,536-item
+// boundary. Both work buffers below (0..8191) sit fully inside the first
+// such block, same as every other range here (all << 65536) - no boundary
+// risk anywhere.
+fftbufL = 0;           // 0..4095, ch0 FFT work buffer (windowed samples -> spectrum)
+fftbufR = 4096;        // 4096..8191, ch1 FFT work buffer (windowed samples -> spectrum)
+window  = 8192;        // 8192..12287
+bandmap = 16384;       // 16384..18431 (bin 0..2047 -> band or -1)
+aL      = 20480;       // 20480..20511 raw per-band |L|^2 power, current frame
+aR      = 20544;       // 20544..20575 raw per-band |R|^2 power, current frame
+aX      = 20608;       // 20608..20639 raw per-band real cross term (Lr*Rr + Li*Ri), current frame
+smL     = 20672;       // 20672..20703 smoothed pL
+smR     = 20736;       // 20736..20767 smoothed pR
+smX     = 20800;       // 20800..20831 smoothed cLR (real cross-spectrum; may legitimately go negative)
+pk      = 20864;       // 20864..20895 peak-hold of (smL+smR) per band
+ring0   = 24576;       // ch0 ring buffer, 4096
+ring1   = 28672;       // ch1 ring buffer, 4096
+
+i = 0;
+loop(FFT_SIZE,
+  window[i] = 0.5 - 0.5 * cos(2 * $pi * i / FFT_SIZE);
+  i += 1;
+);
+// window power compensation: sum(w^2) for Hann = 3/8 * N
+wcomp = 1 / (0.375 * FFT_SIZE);
+
+bincnt = 20928;        // 20928..20959 bins mapped per band (0 = structurally
+                       // empty: at 44.1/48 kHz the ~11 Hz bin spacing skips
+                       // band 1 entirely -> neighbor-filled after accumulation)
+b = 0; loop(NBANDS, bincnt[b] = 0; b += 1;);
+k = 0;
+loop(FFT_SIZE / 2,
+  f = k * srate / FFT_SIZE;
+  bandmap[k] = -1;
+  (f >= 20 && f <= 20000) ? (
+    b = floor(NBANDS * log10(f / 20) / 3);
+    b > NBANDS - 1 ? b = NBANDS - 1;
+    bandmap[k] = b;
+    bincnt[b] += 1;
+  );
+  k += 1;
+);
+
+wpos = 0;              // write position in ring buffers
+fill = 0;              // samples since last analysis frame
+heartbeat = 0;
+// ~300 ms one-pole on frames arriving every HOP samples:
+smooth = 1 - exp(-HOP / (srate * 0.3));
+// peak-hold decay per hop: ~1.5 s to -60 dB (60/20 = 3 decades -> exp(-t/tau) with tau = 0.22 s)
+pkdecay = exp(-HOP / (srate * 0.22));
+// fast broadband envelope (~30 ms) for the activity strip: the smoothed band
+// powers can't show individual hits, this can
+envdecay = exp(-1 / (srate * 0.03));
+env = 0;
+gmem[0] = 2;           // protocol version
+
+@slider
+base = tap_id >= 0 ? (BASE + tap_id * STRIDE) : -1;
+// multi-out VSTs (drum samplers etc.) put individual instruments on higher
+// channel pairs; default 0 analyzes the usual 1/2
+chL = chpair * 2;
+
+@sample
+ring0[wpos] = spl(chL);
+ring1[wpos] = spl(chL + 1);
+ain = abs(spl(chL)) + abs(spl(chL + 1));
+env = ain > env ? ain : env * envdecay;
+wpos = (wpos + 1) % FFT_SIZE;
+fill += 1;
+
+fill >= HOP ? (
+  fill = 0;
+  // copy the most recent FFT_SIZE samples of BOTH channels, windowed, into
+  // two separate FFT work buffers - no channel alternation, both channels
+  // are analyzed every hop.
+  i = 0;
+  rp = wpos;           // oldest sample position
+  loop(FFT_SIZE,
+    fftbufL[i] = ring0[rp] * window[i];
+    fftbufR[i] = ring1[rp] * window[i];
+    rp = (rp + 1) % FFT_SIZE;
+    i += 1;
+  );
+
+  fft_real(fftbufL, FFT_SIZE);
+  fft_permute(fftbufL, FFT_SIZE / 2);
+  fft_real(fftbufR, FFT_SIZE);
+  fft_permute(fftbufR, FFT_SIZE / 2);
+
+  b = 0; loop(NBANDS, aL[b] = 0; aR[b] = 0; aX[b] = 0; b += 1;);
+  k = 1;               // skip bin 0 (DC/Nyquist pair)
+  loop(FFT_SIZE / 2 - 1,
+    bd = bandmap[k];
+    bd >= 0 ? (
+      Lr = fftbufL[2 * k] / FFT_SIZE;
+      Li = fftbufL[2 * k + 1] / FFT_SIZE;
+      Rr = fftbufR[2 * k] / FFT_SIZE;
+      Ri = fftbufR[2 * k + 1] / FFT_SIZE;
+      norm = 2 * wcomp * FFT_SIZE;
+      // *2: one-sided spectrum; wcomp*FFT_SIZE: window power normalization
+      // (same norm applied identically to aL, aR and aX - required so cLR,
+      // pL and pR stay in the same units for pan/width/correlation math)
+      aL[bd] += (Lr * Lr + Li * Li) * norm;
+      aR[bd] += (Rr * Rr + Ri * Ri) * norm;
+      aX[bd] += (Lr * Rr + Li * Ri) * norm;
+    );
+    k += 1;
+  );
+  // bands no FFT bin ever reaches (bincnt 0) borrow the mean of their
+  // neighbors, applied to all three accumulators consistently so the derived
+  // pan/width/correlation stay coherent in the filled band
+  b = 0;
+  loop(NBANDS,
+    bincnt[b] == 0 ? (
+      lo = b > 0 ? aL[b - 1] : 0; hi = b < NBANDS - 1 ? aL[b + 1] : 0;
+      aL[b] = (lo + hi) * 0.5;
+      lo = b > 0 ? aR[b - 1] : 0; hi = b < NBANDS - 1 ? aR[b + 1] : 0;
+      aR[b] = (lo + hi) * 0.5;
+      lo = b > 0 ? aX[b - 1] : 0; hi = b < NBANDS - 1 ? aX[b + 1] : 0;
+      aX[b] = (lo + hi) * 0.5;
+    );
+    b += 1;
+  );
+  b = 0;
+  loop(NBANDS,
+    smL[b] += smooth * (aL[b] - smL[b]);
+    smR[b] += smooth * (aR[b] - smR[b]);
+    smX[b] += smooth * (aX[b] - smX[b]);   // one-pole handles negative values fine
+    // peak from the RAW frame power, not the smoothed values: smoothing
+    // flattens transients before a peak detector could see them, which
+    // would clamp crest readings to ~0-3 dB on any material
+    pkv = aL[b] + aR[b];
+    dk = pk[b] * pkdecay;    // ~1.5 s decay to -60 dB
+    pkv < dk ? pkv = dk;
+    // floor at the smoothed level it will be compared against: the peak
+    // decays FASTER than the average (0.22 s vs 0.3 s time constants), so
+    // in note tails it dove below the average and crest read negative
+    smsum = smL[b] + smR[b];
+    pkv < smsum ? pkv = smsum;
+    pk[b] = pkv;
+    b += 1;
+  );
+);
+
+@block
+base >= 0 ? (
+  heartbeat += 1;
+  gmem[base] = heartbeat;
+  gmem[base + 1] = srate;
+  gmem[base + 2] = NBANDS;
+  gmem[base + 3] = 2;     // protocol version (per-tap)
+  gmem[base + 136] = env * env;   // fast envelope as power (UI gains apply directly)
+  b = 0;
+  loop(NBANDS,
+    gmem[base + 8 + b] = smL[b];
+    gmem[base + 40 + b] = smR[b];
+    gmem[base + 72 + b] = smX[b];
+    gmem[base + 104 + b] = pk[b];
+    b += 1;
+  );
+);
